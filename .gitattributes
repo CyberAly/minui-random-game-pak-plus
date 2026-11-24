@@ -2,4 +2,6 @@
 .gitattributes export-ignore
 .gitarchiveinclude export-ignore
 .gitignore export-ignore
+.deploy.env.example export-ignore
 Makefile export-ignore
+scripts export-ignore
