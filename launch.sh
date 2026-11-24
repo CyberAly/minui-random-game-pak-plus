@@ -27,6 +27,104 @@ fi
 
 ROM_LIST="/tmp/random_game_roms_$$.txt"
 PRESENTER_PID=""
+PRESENTER_BIN="minui-presenter"
+RA_ENABLED=0
+RA_CACHE_DIR="$USERDATA_PATH/$PAK_NAME/ra_cache"
+RA_DISPLAY=""
+
+is_nextui() {
+    [ -f "$SDCARD_PATH/.userdata/shared/minuisettings.txt" ]
+}
+
+select_presenter() {
+    PRESENTER_BIN="minui-presenter"
+    if is_nextui && command -v minui-presenter-nextui >/dev/null 2>&1; then
+        PRESENTER_BIN="minui-presenter-nextui"
+    fi
+}
+
+init_retroachievements() {
+    RA_ENABLED=0
+    if ! is_nextui; then
+        return 0
+    fi
+    if ! command -v ra-helper >/dev/null 2>&1; then
+        echo "ra-helper not found; skipping RetroAchievements display." 1>&2
+        return 0
+    fi
+    if ra-helper check-config --sdcard "$SDCARD_PATH" >/dev/null 2>&1; then
+        RA_ENABLED=1
+    fi
+}
+
+lookup_retroachievements() {
+    ROM_FILE="$1"
+    EMU_TAG="$2"
+    RA_DISPLAY=""
+
+    if [ "$RA_ENABLED" -ne 1 ]; then
+        return 0
+    fi
+
+    ra_out="$(ra-helper lookup \
+        --sdcard "$SDCARD_PATH" \
+        --cache-dir "$RA_CACHE_DIR" \
+        --rom "$ROM_FILE" \
+        --emu "$EMU_TAG" 2>/dev/null || true)"
+
+    if [ -z "$ra_out" ]; then
+        return 0
+    fi
+
+    ra_status=""
+    ra_earned="0"
+    ra_total="0"
+    ra_pending="0"
+    ra_offline_ready="0"
+
+    while IFS='=' read -r key val; do
+        case "$key" in
+            status) ra_status="$val" ;;
+            earned) ra_earned="$val" ;;
+            total) ra_total="$val" ;;
+            pending) ra_pending="$val" ;;
+            offline_ready) ra_offline_ready="$val" ;;
+        esac
+    done <<EOF
+$ra_out
+EOF
+
+    case "$ra_status" in
+        ok)
+            if [ "$ra_offline_ready" = "1" ]; then
+                if [ "$ra_pending" -gt 0 ] 2>/dev/null; then
+                    RA_DISPLAY="RA: ${ra_earned}/${ra_total}\nRA Offline Ready (${ra_pending} Unsynced)"
+                else
+                    RA_DISPLAY="RA: ${ra_earned}/${ra_total}\nRA Offline Ready"
+                fi
+            else
+                RA_DISPLAY="RA: ${ra_earned}/${ra_total}\nWiFi Required for RA"
+            fi
+            ;;
+        none)
+            RA_DISPLAY="RA None"
+            ;;
+        unsupported)
+            RA_DISPLAY="RA Unsupported"
+            ;;
+        wifi_required)
+            RA_DISPLAY="WiFi Required for RA"
+            ;;
+        auth_invalid)
+            echo "RetroAchievements credentials invalid; disabling RA display for this session." 1>&2
+            RA_ENABLED=0
+            RA_DISPLAY=""
+            ;;
+        disabled | "")
+            RA_DISPLAY=""
+            ;;
+    esac
+}
 
 build_rom_list() {
     ROMS_DIR="$1"
@@ -215,7 +313,7 @@ stop_presenter() {
         wait "$PRESENTER_PID" 2>/dev/null || true
         PRESENTER_PID=""
     fi
-    killall minui-presenter >/dev/null 2>&1 || true
+    killall minui-presenter minui-presenter-nextui >/dev/null 2>&1 || true
 }
 
 show_message() {
@@ -229,10 +327,10 @@ show_message() {
     stop_presenter
     echo "$message" 1>&2
     if [ "$seconds" = "forever" ]; then
-        minui-presenter --message "$message" --timeout -1 &
+        "$PRESENTER_BIN" --message "$message" --timeout -1 &
         PRESENTER_PID=$!
     else
-        minui-presenter --message "$message" --timeout "$seconds"
+        "$PRESENTER_BIN" --message "$message" --timeout "$seconds"
     fi
 }
 
@@ -240,28 +338,58 @@ show_preview() {
     TITLE="$1"
     SYSTEM="$2"
     COVER_ART="$3"
+    RA_INFO="$4"
 
     stop_presenter
 
     MESSAGE="${TITLE}\n${SYSTEM}"
+    if [ -n "$RA_INFO" ]; then
+        MESSAGE="${MESSAGE}\n${RA_INFO}"
+    fi
+
     if [ -n "$COVER_ART" ]; then
-        minui-presenter \
-            --message "$MESSAGE" \
-            --message-alignment top \
-            --background-image "$COVER_ART" \
-            --show-pill \
-            --confirm-button A --confirm-text "PLAY" --confirm-show \
-            --action-button Y --action-text "REROLL" --action-show \
-            --cancel-button B --cancel-text "QUIT" --cancel-show \
-            --timeout 0
+        if [ "$RA_ENABLED" -eq 1 ]; then
+            # Offset top-aligned message by one row so it clears the top-right hardware bar
+            "$PRESENTER_BIN" \
+                --message "\n${MESSAGE}" \
+                --message-alignment top \
+                --background-image "$COVER_ART" \
+                --show-pill \
+                --show-hardware-group \
+                --confirm-button A --confirm-text "PLAY" --confirm-show \
+                --action-button Y --action-text "REROLL" --action-show \
+                --cancel-button B --cancel-text "QUIT" --cancel-show \
+                --timeout 0
+        else
+            "$PRESENTER_BIN" \
+                --message "$MESSAGE" \
+                --message-alignment top \
+                --background-image "$COVER_ART" \
+                --show-pill \
+                --confirm-button A --confirm-text "PLAY" --confirm-show \
+                --action-button Y --action-text "REROLL" --action-show \
+                --cancel-button B --cancel-text "QUIT" --cancel-show \
+                --timeout 0
+        fi
     else
-        minui-presenter \
-            --message "$MESSAGE" \
-            --message-alignment middle \
-            --confirm-button A --confirm-text "PLAY" --confirm-show \
-            --action-button Y --action-text "REROLL" --action-show \
-            --cancel-button B --cancel-text "QUIT" --cancel-show \
-            --timeout 0
+        if [ "$RA_ENABLED" -eq 1 ]; then
+            "$PRESENTER_BIN" \
+                --message "$MESSAGE" \
+                --message-alignment middle \
+                --show-hardware-group \
+                --confirm-button A --confirm-text "PLAY" --confirm-show \
+                --action-button Y --action-text "REROLL" --action-show \
+                --cancel-button B --cancel-text "QUIT" --cancel-show \
+                --timeout 0
+        else
+            "$PRESENTER_BIN" \
+                --message "$MESSAGE" \
+                --message-alignment middle \
+                --confirm-button A --confirm-text "PLAY" --confirm-show \
+                --action-button Y --action-text "REROLL" --action-show \
+                --cancel-button B --cancel-text "QUIT" --cancel-show \
+                --timeout 0
+        fi
     fi
 }
 
@@ -285,10 +413,13 @@ main() {
         return 1
     fi
 
-    if ! command -v minui-presenter >/dev/null 2>&1; then
-        show_message "minui-presenter not found" 2
+    select_presenter
+    if ! command -v "$PRESENTER_BIN" >/dev/null 2>&1; then
+        show_message "$PRESENTER_BIN not found" 2
         return 1
     fi
+
+    init_retroachievements
 
     show_message "Finding a random game..."
     build_rom_list "$SDCARD_PATH/Roms" "$ROM_LIST"
@@ -321,10 +452,11 @@ main() {
             ROM_ALIAS="$(get_rom_alias "$FILE")"
             SYSTEM_NAME="$(get_system_name "$EMU_FOLDER")"
             COVER_ART="$(get_cover_art "$FILE" || true)"
+            lookup_retroachievements "$FILE" "$EMU_NAME"
             NEED_ROLL=0
         fi
 
-        show_preview "$ROM_ALIAS" "$SYSTEM_NAME" "$COVER_ART"
+        show_preview "$ROM_ALIAS" "$SYSTEM_NAME" "$COVER_ART" "$RA_DISPLAY"
         EXIT_CODE=$?
 
         case "$EXIT_CODE" in

@@ -8,10 +8,16 @@ PUSH_PLATFORM ?= tg5040
 PLATFORMS := h700 miyoomini my282 my355 rg35xxplus tg5040 tg5050
 MINUI_PRESENTER_VERSION := 0.13.4
 
-clean:
-	rm -f bin/*/minui-presenter || true
+NEXTUI_DUAL_PLATFORMS := tg5040 my355
+RA_HELPER_ARCHES := arm64 arm
 
-build: $(foreach platform,$(PLATFORMS),bin/$(platform)/minui-presenter)
+clean:
+	rm -f bin/*/minui-presenter bin/*/minui-presenter-nextui bin/*/ra-helper || true
+	$(MAKE) -C src/ra-helper clean
+
+build: $(foreach platform,$(PLATFORMS),bin/$(platform)/minui-presenter) \
+	$(foreach platform,$(NEXTUI_DUAL_PLATFORMS),bin/$(platform)/minui-presenter-nextui) \
+	$(foreach arch,$(RA_HELPER_ARCHES),bin/$(arch)/ra-helper)
 
 bin/h700/minui-presenter:
 	mkdir -p bin/h700
@@ -23,10 +29,21 @@ bin/tg5050/minui-presenter:
 	curl -f -o bin/tg5050/minui-presenter -sSL https://github.com/josegonzalez/minui-presenter/releases/download/$(MINUI_PRESENTER_VERSION)/minui-presenter-tg5050-nextui
 	chmod +x bin/tg5050/minui-presenter
 
+bin/%/minui-presenter-nextui:
+	mkdir -p bin/$*
+	curl -f -o bin/$*/minui-presenter-nextui -sSL https://github.com/josegonzalez/minui-presenter/releases/download/$(MINUI_PRESENTER_VERSION)/minui-presenter-$*-nextui
+	chmod +x bin/$*/minui-presenter-nextui
+
 bin/%/minui-presenter:
 	mkdir -p bin/$*
 	curl -f -o bin/$*/minui-presenter -sSL https://github.com/josegonzalez/minui-presenter/releases/download/$(MINUI_PRESENTER_VERSION)/minui-presenter-$*
 	chmod +x bin/$*/minui-presenter
+
+bin/arm64/ra-helper:
+	$(MAKE) -C src/ra-helper arm64
+
+bin/arm/ra-helper:
+	$(MAKE) -C src/ra-helper arm
 
 release: build
 	mkdir -p dist

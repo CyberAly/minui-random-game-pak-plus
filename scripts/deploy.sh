@@ -114,6 +114,31 @@ presenter_download_url() {
     esac
 }
 
+presenter_nextui_download_url() {
+    platform="$1"
+    version="$2"
+    base="https://github.com/josegonzalez/minui-presenter/releases/download/${version}"
+    case "$platform" in
+        tg5040 | my355)
+            printf '%s/minui-presenter-%s-nextui\n' "$base" "$platform"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+platform_arch() {
+    case "$1" in
+        tg5040 | tg5050 | h700 | my355)
+            printf 'arm64\n'
+            ;;
+        *)
+            printf 'arm\n'
+            ;;
+    esac
+}
+
 usage() {
     cat <<'EOF'
 Usage: scripts/deploy.sh [options]
@@ -559,36 +584,95 @@ fi
 # Ensure minui-presenter binary for target platform is cached locally
 # ---------------------------------------------------------------------------
 
-ensure_presenter_binary() {
-    bin_path="$REPO_ROOT/bin/${PLATFORM}/minui-presenter"
+ARCH="$(platform_arch "$PLATFORM")"
+
+download_binary_if_needed() {
+    bin_path="$1"
+    url="$2"
+    label="$3"
+
     if [ -x "$bin_path" ] && [ -s "$bin_path" ] && [ "$FORCE_DOWNLOAD" -eq 0 ]; then
-        log "Using cached binary: bin/${PLATFORM}/minui-presenter"
+        log "Using cached binary: $label"
         return 0
     fi
-
-    version="$(read_presenter_version)"
-    url="$(presenter_download_url "$PLATFORM" "$version")"
 
     if [ "$DRY_RUN" -eq 1 ]; then
-        log "[dry-run] Would download $url -> bin/${PLATFORM}/minui-presenter"
+        log "[dry-run] Would download $url -> $label"
         return 0
     fi
 
-    command -v curl >/dev/null 2>&1 || die "'curl' is required to download minui-presenter."
-    log "Downloading minui-presenter (${version}) for ${PLATFORM}..."
-    mkdir -p "$REPO_ROOT/bin/${PLATFORM}"
+    command -v curl >/dev/null 2>&1 || die "'curl' is required to download $label."
+    log "Downloading $label..."
+    mkdir -p "$(dirname "$bin_path")"
     tmp_bin="${bin_path}.tmp.$$"
     if ! curl -f -sSL -o "$tmp_bin" "$url"; then
         rm -f "$tmp_bin"
-        die "Failed to download minui-presenter from $url"
+        die "Failed to download $label from $url"
     fi
     if [ ! -s "$tmp_bin" ]; then
         rm -f "$tmp_bin"
-        die "Downloaded minui-presenter binary was empty: $url"
+        die "Downloaded binary was empty: $url"
     fi
     chmod +x "$tmp_bin"
     mv "$tmp_bin" "$bin_path"
-    log "Cached binary at bin/${PLATFORM}/minui-presenter"
+    log "Cached binary at $label"
+}
+
+ensure_presenter_binary() {
+    version="$(read_presenter_version)"
+    url="$(presenter_download_url "$PLATFORM" "$version")"
+    download_binary_if_needed "$REPO_ROOT/bin/${PLATFORM}/minui-presenter" "$url" "bin/${PLATFORM}/minui-presenter"
+
+    if nextui_url="$(presenter_nextui_download_url "$PLATFORM" "$version" 2>/dev/null)"; then
+        download_binary_if_needed "$REPO_ROOT/bin/${PLATFORM}/minui-presenter-nextui" "$nextui_url" "bin/${PLATFORM}/minui-presenter-nextui"
+    fi
+}
+
+ensure_ra_helper_binary() {
+    helper_path="$REPO_ROOT/bin/${ARCH}/ra-helper"
+    if [ -x "$helper_path" ] && [ -s "$helper_path" ]; then
+        log "Using cached binary: bin/${ARCH}/ra-helper"
+        return 0
+    fi
+
+    if [ "$DRY_RUN" -eq 1 ]; then
+        log "[dry-run] Would build bin/${ARCH}/ra-helper"
+        return 0
+    fi
+
+    if [ ! -f "$REPO_ROOT/src/ra-helper/Makefile" ]; then
+        return 0
+    fi
+
+    cc_needed=""
+    if [ "$ARCH" = "arm64" ]; then
+        if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "aarch64" ]; then
+            cc_needed="gcc"
+        else
+            cc_needed="aarch64-linux-gnu-gcc"
+        fi
+    else
+        cc_needed="arm-linux-gnueabihf-gcc"
+    fi
+
+    if command -v "$cc_needed" >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1; then
+        log "Building bin/${ARCH}/ra-helper locally..."
+        make -C "$REPO_ROOT/src/ra-helper" "$ARCH"
+        return 0
+    fi
+
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        log "Building bin/${ARCH}/ra-helper via Docker..."
+        docker_pkg="gcc-aarch64-linux-gnu"
+        if [ "$ARCH" = "arm" ]; then
+            docker_pkg="gcc-arm-linux-gnueabihf"
+        fi
+        docker run --rm -v "$REPO_ROOT:/work" -w /work/src/ra-helper ubuntu:24.04 sh -c \
+            "apt-get update -qq && apt-get install -y -qq build-essential cmake git ${docker_pkg} && make ${ARCH}"
+        return 0
+    fi
+
+    warn "Skipping bin/${ARCH}/ra-helper (install ${cc_needed}+cmake or Docker to enable RetroAchievements support)."
 }
 
 # ---------------------------------------------------------------------------
@@ -617,6 +701,17 @@ stage_pak() {
     if [ "$DRY_RUN" -eq 0 ]; then
         cp "$REPO_ROOT/bin/${PLATFORM}/minui-presenter" "$STAGE_DIR/bin/${PLATFORM}/minui-presenter"
         chmod +x "$STAGE_DIR/bin/${PLATFORM}/minui-presenter"
+
+        if [ -f "$REPO_ROOT/bin/${PLATFORM}/minui-presenter-nextui" ]; then
+            cp "$REPO_ROOT/bin/${PLATFORM}/minui-presenter-nextui" "$STAGE_DIR/bin/${PLATFORM}/minui-presenter-nextui"
+            chmod +x "$STAGE_DIR/bin/${PLATFORM}/minui-presenter-nextui"
+        fi
+
+        if [ -f "$REPO_ROOT/bin/${ARCH}/ra-helper" ]; then
+            mkdir -p "$STAGE_DIR/bin/${ARCH}"
+            cp "$REPO_ROOT/bin/${ARCH}/ra-helper" "$STAGE_DIR/bin/${ARCH}/ra-helper"
+            chmod +x "$STAGE_DIR/bin/${ARCH}/ra-helper"
+        fi
     fi
 
     if [ -d "$REPO_ROOT/res" ]; then
@@ -633,12 +728,14 @@ deploy_adb() {
     quoted_dir="$(shell_quote "$TARGET_PAK_DIR")"
     quoted_launch="$(shell_quote "$TARGET_PAK_DIR/launch.sh")"
     quoted_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter")"
+    quoted_nextui_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter-nextui")"
+    quoted_ra_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${ARCH}/ra-helper")"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         [ "$DEPLOY_CLEAN" -eq 1 ] && log "[dry-run] adb shell rm -rf $quoted_dir"
         log "[dry-run] adb shell mkdir -p $quoted_dir"
         log "[dry-run] adb push <staged-pak>/. $TARGET_PAK_DIR"
-        log "[dry-run] adb shell chmod +x $quoted_launch $quoted_bin"
+        log "[dry-run] adb shell chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_ra_bin"
         return 0
     fi
 
@@ -649,19 +746,21 @@ deploy_adb() {
 
     adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} shell "mkdir -p $quoted_dir"
     adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} push "$STAGE_DIR/." "$TARGET_PAK_DIR"
-    adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} shell "{ chmod +x $quoted_launch $quoted_bin 2>/dev/null || true; } && test -f $quoted_launch"
+    adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} shell "{ chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_ra_bin 2>/dev/null || true; } && test -f $quoted_launch"
 }
 
 deploy_ssh() {
     quoted_dir="$(shell_quote "$TARGET_PAK_DIR")"
     quoted_launch="$(shell_quote "$TARGET_PAK_DIR/launch.sh")"
     quoted_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter")"
+    quoted_nextui_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter-nextui")"
+    quoted_ra_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${ARCH}/ra-helper")"
 
     remote_cmd=""
     if [ "$DEPLOY_CLEAN" -eq 1 ]; then
         remote_cmd="rm -rf $quoted_dir && "
     fi
-    remote_cmd="${remote_cmd}mkdir -p $quoted_dir && tar -xf - -C $quoted_dir && { chmod +x $quoted_launch $quoted_bin 2>/dev/null || true; } && test -f $quoted_launch"
+    remote_cmd="${remote_cmd}mkdir -p $quoted_dir && tar -xf - -C $quoted_dir && { chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_ra_bin 2>/dev/null || true; } && test -f $quoted_launch"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log "[dry-run] tar --format=ustar -C <staged-pak> -cf - . | ssh ${DEPLOY_USER}@${DEPLOY_HOST} (port ${DEPLOY_PORT}) \"$remote_cmd\""
@@ -689,7 +788,11 @@ deploy_local() {
     fi
     mkdir -p "$TARGET_PAK_DIR"
     COPYFILE_DISABLE=1 cp -R "$STAGE_DIR/." "$TARGET_PAK_DIR/"
-    chmod +x "$TARGET_PAK_DIR/launch.sh" "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter" 2>/dev/null || true
+    chmod +x \
+        "$TARGET_PAK_DIR/launch.sh" \
+        "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter" \
+        "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter-nextui" \
+        "$TARGET_PAK_DIR/bin/${ARCH}/ra-helper" 2>/dev/null || true
     # Clean any stray macOS metadata files on FAT32/exFAT SD cards
     find "$TARGET_PAK_DIR" \( -name '._*' -o -name '.DS_Store' \) -delete 2>/dev/null || true
 }
@@ -699,7 +802,7 @@ deploy_local() {
 # ---------------------------------------------------------------------------
 
 log "Method:   $DEPLOY_METHOD"
-log "Platform: $PLATFORM"
+log "Platform: $PLATFORM ($ARCH)"
 log "Target:   $TARGET_PAK_DIR"
 if [ "$DEPLOY_METHOD" = "ssh" ]; then
     log "Host:     ${DEPLOY_USER}@${DEPLOY_HOST}:${DEPLOY_PORT}"
@@ -712,6 +815,7 @@ case "$DEPLOY_METHOD" in
 esac
 
 ensure_presenter_binary
+ensure_ra_helper_binary
 stage_pak
 
 case "$DEPLOY_METHOD" in

@@ -4,3 +4,6 @@ bin/*
 !bin/.gitkeep
 res/fonts/*
 !res/fonts/.gitkeep
+src/ra-helper/deps
+src/ra-helper/build
+

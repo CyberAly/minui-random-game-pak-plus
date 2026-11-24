@@ -12,6 +12,10 @@ An enhanced fork of Jose Diaz-Gonzalez's [`minui-random-game-pak`](https://githu
 The original `minui-random-game.pak` picks a random file from `/Roms` and immediately launches it. This version keeps the same lightweight shell-script footprint while adding quality-of-life improvements:
 
 - **Interactive Game Preview with Cover Art**: Before launching, displays the rolled game's title, system name, and box/cover art (if available) with a translucent pill overlay for readability.
+- **Optional NextUI RetroAchievements Preview**: Automatically activates when RetroAchievements is enabled and authenticated in NextUI Settings (no separate login required, invisible no-op on MinUI or when RA is disabled/invalid):
+  - Displays softcore progress (e.g. `RA: 34/50`), whether the game is cached in NextUI for offline play (`RA Offline Ready`, plus pending unsynced count from NextUI's offline ledger) or needs Wi-Fi (`WiFi Required for RA`), as well as `RA None` (no official set) and `RA Unsupported` (unmatched ROM/hash).
+  - Shows NextUI's native top-right hardware bar (Wi-Fi status, clock, and battery) so you can immediately tell if you're connected.
+  - Uses a small static C helper (`ra-helper`, built with `rcheevos` + `libchdr` + `miniz`) for 100% ROM hashing parity with NextUI across cartridge, archive (`.zip`), arcade, and disc (`.chd`/`.cue`/`.iso`/`.pbp`) systems, with lazy per-roll caching and strictly read-only inspection of NextUI's `.ra/offline/` cache and ledger.
 - **Instant Re-roll & Cancel Controls**: Not in the mood for the picked game? Press `Y` to roll another game immediately or `B` to return to the menu—no more launching a game just to quit and re-open the pak.
 - **Faster, Smarter ROM Scanning**:
   - Scans your `Roms/` directory **once** per session so re-rolling is near-instant (no repeated `find` scans or artificial startup delay).
@@ -19,7 +23,7 @@ The original `minui-random-game.pak` picks a random file from `/Roms` and immedi
   - Filters out non-game files commonly stored alongside ROMs: artwork folders and images (`Imgs/*`, `.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`), metadata/databases (`.xml`, `.json`, `.db`), save files (`.sav`, `.srm`), hidden files, `.txt`, and `.log`.
 - **Clean Titles & `map.txt` Support**: Reads MinUI `map.txt` files to display proper game names (especially helpful for arcade/MAME sets), falls back to stripping region/revision tags like `(USA)` and `[!]`, and cleans system folder names (e.g., `01) Game Boy Advance (GBA)` → `Game Boy Advance`).
 - **Better Randomness & No Back-to-Back Repeats**: Uses `/dev/urandom` (with a deterministic fallback) instead of `(timestamp + PID) % total`, and avoids picking the exact same game twice in a row when re-rolling.
-- **Built-in Multi-Transport Deploy Script (`scripts/deploy.sh`)**: Automatically fetches the matching `minui-presenter` binary for your platform and deploys directly from your computer via USB (ADB), Wi-Fi (SSH), or a mounted microSD card—plus built-in remote debug log viewing.
+- **Built-in Multi-Transport Deploy Script (`scripts/deploy.sh`)**: Automatically fetches the matching `minui-presenter` binary for your platform, builds `ra-helper` (via local cross-compiler or Docker if available), and deploys directly from your computer via USB (ADB), Wi-Fi (SSH), or a mounted microSD card—plus built-in remote debug log viewing.
 
 ## Supported Platforms
 
@@ -49,14 +53,15 @@ On your handheld, open `Tools > Random Game` (or whatever custom name you deploy
 
 ## Building & Deploying to Your Unit
 
-There is no compilation required—the pak is a POSIX shell script (`launch.sh`) paired with a prebuilt [`minui-presenter`](https://github.com/josegonzalez/minui-presenter) binary for your handheld's platform.
+The core pak is a POSIX shell script (`launch.sh`) paired with prebuilt [`minui-presenter`](https://github.com/josegonzalez/minui-presenter) binaries and an optional static C helper (`src/ra-helper`) for NextUI RetroAchievements support. If `ra-helper` isn't built or you're on MinUI, the pak still runs cleanly without RetroAchievements.
 
 ### Prerequisites
 
 - **All methods:** `git`, `curl`, and `bash` (built into macOS and Linux; use WSL or Git Bash on Windows)
+- **RetroAchievements helper (`ra-helper`):** Either Docker (used automatically by `scripts/deploy.sh` on macOS/Linux) or Linux ARM cross-compilers (`gcc-aarch64-linux-gnu`, `gcc-arm-linux-gnueabihf`) + `cmake`
 - **USB (ADB) deploy:** Android Platform Tools (`adb`)
 - **Wi-Fi (SSH) deploy:** `ssh` (built into macOS/Linux) and NextUI Pak Store's **SSH Server**
-- **Building a standalone `.pak.zip` via `make`:** `make`, `jq`, and `zip`
+- **Building a standalone `.pak.zip` via `make`:** `make`, `jq`, `zip`, `cmake`, and ARM cross-compilers
 
 ### Step 1: Clone the Repository
 
