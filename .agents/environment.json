@@ -1,0 +1,3 @@
+{
+  "install": "if [ \"$(id -u)\" -ne 0 ]; then SUDO=sudo; else SUDO=\"\"; fi; $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update -qq && $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends make jq curl zip unzip shellcheck shfmt busybox bats lftp sshpass && make build"
+}
