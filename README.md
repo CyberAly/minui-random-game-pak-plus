@@ -30,8 +30,12 @@ Use the correct platform for your device.
 > [!IMPORTANT]
 > If the zip file was not extracted correctly, the pak may show up under `Tools > Random Game`. Rename the folder to `Random Game.pak` to fix this.
 
-Browse to `Tools > Random Game` and press `A` to play a random game.
+Browse to `Tools > Random Game` and press `A` to roll a random game. The selected game's title, system, and cover art (if available) will be shown:
+
+- `A`: Launch the game
+- `Y`: Re-roll for another random game
+- `B`: Return to the main menu
 
 ### Debug Logging
 
-Debug logs are written to the`$SDCARD_PATH/.userdata/$PLATFORM/logs/` folder.
+Debug logs are written to the `$SDCARD_PATH/.userdata/$PLATFORM/logs/` folder.
