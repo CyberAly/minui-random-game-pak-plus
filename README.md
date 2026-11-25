@@ -58,7 +58,10 @@ The core pak is a POSIX shell script (`launch.sh`) paired with prebuilt [`minui-
 ### Prerequisites
 
 - **All methods:** `git`, `curl`, and `bash` (built into macOS and Linux; use WSL or Git Bash on Windows)
-- **RetroAchievements helper (`ra-helper`):** Either Docker (used automatically by `scripts/deploy.sh` on macOS/Linux) or Linux ARM cross-compilers (`gcc-aarch64-linux-gnu`, `gcc-arm-linux-gnueabihf`) + `cmake`
+- **RetroAchievements helper (`ra-helper`):**
+  - **macOS (easiest, via Docker):** `brew install docker colima && colima start` (or OrbStack / Docker Desktop) — `scripts/deploy.sh` uses it automatically
+  - **macOS (native, no Docker):** `brew install cmake messense/macos-cross-toolchains/aarch64-unknown-linux-gnu`
+  - **Linux:** `sudo apt install build-essential cmake gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf` (or Docker)
 - **USB (ADB) deploy:** Android Platform Tools (`adb`)
 - **Wi-Fi (SSH) deploy:** `ssh` (built into macOS/Linux) and NextUI Pak Store's **SSH Server**
 - **Building a standalone `.pak.zip` via `make`:** `make`, `jq`, `zip`, `cmake`, and ARM cross-compilers
