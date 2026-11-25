@@ -630,7 +630,19 @@ ensure_presenter_binary() {
 
 ensure_ra_helper_binary() {
     helper_path="$REPO_ROOT/bin/${ARCH}/ra-helper"
-    if [ -x "$helper_path" ] && [ -s "$helper_path" ]; then
+    need_rebuild=0
+    if [ ! -x "$helper_path" ] || [ ! -s "$helper_path" ] || [ "$FORCE_DOWNLOAD" -eq 1 ]; then
+        need_rebuild=1
+    else
+        for src_file in "$REPO_ROOT"/src/ra-helper/*.c "$REPO_ROOT"/src/ra-helper/*.h "$REPO_ROOT"/src/ra-helper/Makefile; do
+            if [ -f "$src_file" ] && [ "$src_file" -nt "$helper_path" ]; then
+                need_rebuild=1
+                break
+            fi
+        done
+    fi
+
+    if [ "$need_rebuild" -eq 0 ]; then
         log "Using cached binary: bin/${ARCH}/ra-helper"
         return 0
     fi

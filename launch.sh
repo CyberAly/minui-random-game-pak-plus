@@ -109,6 +109,9 @@ EOF
         none)
             RA_DISPLAY="RA None"
             ;;
+        incompatible)
+            RA_DISPLAY="RA Incompatible ROM"
+            ;;
         unsupported)
             RA_DISPLAY="RA Unsupported"
             ;;

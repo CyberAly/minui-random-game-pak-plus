@@ -43,6 +43,16 @@
 #define RA_MAX_CACHE_FILE_BYTES   (8U * 1024U * 1024U)
 #define RA_SHA256_LEN             32
 
+/*
+ * RetroAchievements synthetic sentinel IDs (from RetroAchievements/RAWeb):
+ *   - Achievement::CLIENT_WARNING_ID (101000001): injected into PatchData and
+ *     softcore UserUnlocks for non-Full clients (or incompatible hashes).
+ *   - VirtualGameIdService::IncompatibleIdBase (1000000000): r=gameid returns
+ *     game_id + 1000000000/1100000000/1200000000 for Incompatible/Untested/PatchRequired ROMs.
+ */
+#define RA_CLIENT_WARNING_ID      101000001U
+#define RA_VIRTUAL_GAME_ID_BASE   1000000000U
+
 /* NextUI ledger record types (from LoveRetro/NextUI ra_offline.h) */
 #define RA_LEDGER_SESSION_START      0x01
 #define RA_LEDGER_ACHIEVEMENT_UNLOCK 0x02
@@ -95,7 +105,7 @@ static bool idset_contains(const IdSet *s, uint32_t id) {
 }
 
 static bool idset_add(IdSet *s, uint32_t id) {
-    if (id == 0 || idset_contains(s, id)) return true;
+    if (id == 0 || id >= RA_CLIENT_WARNING_ID || idset_contains(s, id)) return true;
     if (s->count == s->cap) {
         size_t new_cap = s->cap ? s->cap * 2 : 32;
         uint32_t *p = (uint32_t *)realloc(s->items, new_cap * sizeof(uint32_t));
@@ -1350,10 +1360,17 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
         }
     }
 
+    /* Reconcile cached counts after filtering synthetic warning IDs */
+    if (pak.present) {
+        pak.total = (uint32_t)pak.core_ids.count;
+    }
+
     /* Decide whether we should refresh metadata or unlocks online */
     bool meta_fresh = false;
     if (pak.present && pak.meta_ts > 0) {
-        time_t ttl = (pak.game_id > 0 && pak.total > 0) ? RA_META_TTL_FOUND_SECS : RA_META_TTL_MISSING_SECS;
+        time_t ttl = (pak.game_id > 0 && pak.game_id <= RA_VIRTUAL_GAME_ID_BASE && pak.total > 0)
+                         ? RA_META_TTL_FOUND_SECS
+                         : RA_META_TTL_MISSING_SECS;
         if (now >= pak.meta_ts && (now - pak.meta_ts) < ttl) {
             meta_fresh = true;
         }
@@ -1371,7 +1388,7 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
     bool auth_invalid = false;
     bool network_failed = false;
 
-    if (!offline_only && (!meta_fresh || (game_id > 0 && core_ids.count > 0 && !unlocks_fresh))) {
+    if (!offline_only && (!meta_fresh || (game_id > 0 && game_id <= RA_VIRTUAL_GAME_ID_BASE && core_ids.count > 0 && !unlocks_fresh))) {
         char enc_user[384], enc_token[384];
         bool enc_ok = url_encode(cfg.username, enc_user, sizeof(enc_user)) &&
                       url_encode(cfg.token, enc_token, sizeof(enc_token));
@@ -1388,8 +1405,8 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
                 int succ = json_get_bool(resp, resp + rlen, "Success");
                 if (succ == 1 && json_get_uint(resp, resp + rlen, "GameID", &gid)) {
                     game_id = gid;
-                    if (gid == 0) {
-                        /* Hash not recognized on RA -> cache unsupported */
+                    if (gid == 0 || gid > RA_VIRTUAL_GAME_ID_BASE) {
+                        /* Hash unrecognized (0) or incompatible/untested/patch-required (> 1e9) */
                         idset_free(&core_ids);
                         idset_init(&core_ids);
                         have_meta = true;
@@ -1397,7 +1414,7 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
                         source = "online";
 
                         pak.present = true;
-                        pak.game_id = 0;
+                        pak.game_id = gid;
                         pak.total = 0;
                         pak.earned = 0;
                         pak.meta_ts = now;
@@ -1417,8 +1434,9 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
             }
         }
 
-        /* Step 2: fetch game achievement set (r=patch) if game_id > 0 and metadata not fresh */
-        if (enc_ok && !auth_invalid && !network_failed && !meta_fresh && game_id > 0) {
+        /* Step 2: fetch game achievement set (r=patch) if compatible game_id > 0 and metadata not fresh */
+        if (enc_ok && !auth_invalid && !network_failed && !meta_fresh &&
+            game_id > 0 && game_id <= RA_VIRTUAL_GAME_ID_BASE) {
             char post[1024];
             snprintf(post, sizeof(post), "r=patch&u=%s&t=%s&g=%u", enc_user, enc_token, game_id);
             char *resp = NULL;
@@ -1463,8 +1481,10 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
             }
         }
 
-        /* Step 3: fetch softcore unlocks (r=unlocks&h=0) if game has official achievements */
-        if (enc_ok && !auth_invalid && !network_failed && game_id > 0 && core_ids.count > 0 && !unlocks_fresh) {
+        /* Step 3: fetch softcore unlocks (r=unlocks&h=0) if compatible game has official achievements */
+        if (enc_ok && !auth_invalid && !network_failed &&
+            game_id > 0 && game_id <= RA_VIRTUAL_GAME_ID_BASE &&
+            core_ids.count > 0 && !unlocks_fresh) {
             char post[1024];
             snprintf(post, sizeof(post), "r=unlocks&u=%s&t=%s&g=%u&h=0", enc_user, enc_token, game_id);
             char *resp = NULL;
@@ -1511,6 +1531,8 @@ static int cmd_lookup(const char *sdcard, const char *cache_dir,
         print_result("wifi_required", hash, 0, 0, 0, 0, nextui.offline_ready, "none");
     } else if (game_id == 0) {
         print_result("unsupported", hash, 0, 0, 0, 0, false, source);
+    } else if (game_id > RA_VIRTUAL_GAME_ID_BASE) {
+        print_result("incompatible", hash, game_id, 0, 0, 0, false, source);
     } else if (core_ids.count == 0) {
         print_result("none", hash, game_id, 0, 0, 0, nextui.offline_ready, source);
     } else if (!have_unlocks && !nextui.has_session) {

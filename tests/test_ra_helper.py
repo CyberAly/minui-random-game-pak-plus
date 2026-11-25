@@ -170,12 +170,18 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
         no_ach_hash = hashlib.md5(no_ach_bytes).hexdigest()
         no_ach_rom.write_bytes(no_ach_bytes)
 
+        # Incompatible ROM (virtual game ID > 1000000000 from RA)
+        incompat_rom = gba_dir / "Wrong Region (Japan).gba"
+        incompat_bytes = b"INCOMPATIBLE_REGION_ROM" * 512
+        incompat_hash = hashlib.md5(incompat_bytes).hexdigest()
+        incompat_rom.write_bytes(incompat_bytes)
+
         # Arcade ROM (FBN hashes filename without extension: "mslug")
         fbn_rom = fbn_dir / "mslug.zip"
         fbn_rom.write_bytes(b"fake zip contents")
         expected_fbn_hash = hashlib.md5(b"mslug").hexdigest()
 
-        # Configure mock RA server
+        # Configure mock RA server (including realistic CLIENT_WARNING_ID 101000001 injection)
         def handle_gameid(p):
             m = p.get("m", "")
             if m == gba_hash:
@@ -186,12 +192,15 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
                 return 200, {"Success": True, "GameID": 3003}
             if m == expected_fbn_hash:
                 return 200, {"Success": True, "GameID": 4004}
+            if m == incompat_hash:
+                return 200, {"Success": True, "GameID": 1000007777}
             return 200, {"Success": True, "GameID": 0}
 
         def handle_patch(p):
             if p.get("t") != "tok123":
                 return 200, {"Success": False, "Code": "invalid_credentials", "Error": "Invalid User/Token"}
             g = int(p.get("g", "0"))
+            assert g <= 1000000000, f"Should not fetch patch for virtual game ID {g}"
             if g == 1001:
                 return 200, {
                     "Success": True,
@@ -204,6 +213,7 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
                             {"ID": 103, "Flags": 3, "Title": "A3"},
                             {"ID": 104, "Flags": 3, "Title": "A4"},
                             {"ID": 999, "Flags": 5, "Title": "Unofficial"},
+                            {"ID": 101000001, "Flags": 3, "Title": "Warning: Unknown Emulator"},
                         ],
                     },
                 }
@@ -215,12 +225,19 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
                         "Title": "No Achievements Yet",
                         "Achievements": [
                             {"ID": 888, "Flags": 5, "Title": "Only Unofficial"},
+                            {"ID": 101000001, "Flags": 3, "Title": "Warning: Unknown Emulator"},
                         ],
                     },
                 }
             return 200, {
                 "Success": True,
-                "PatchData": {"ID": g, "Achievements": [{"ID": 501, "Flags": 3}]},
+                "PatchData": {
+                    "ID": g,
+                    "Achievements": [
+                        {"ID": 501, "Flags": 3},
+                        {"ID": 101000001, "Flags": 3, "Title": "Warning: Unknown Emulator"},
+                    ],
+                },
             }
 
         def handle_unlocks(p):
@@ -228,9 +245,11 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
                 return 401, {"Success": False, "Error": "Unauthorized"}
             assert p.get("h") == "0", f"Expected softcore h=0, got {p}"
             g = int(p.get("g", "0"))
+            assert g <= 1000000000, f"Should not fetch unlocks for virtual game ID {g}"
             if g == 1001:
-                return 200, {"Success": True, "UserUnlocks": [101, 102, 999]}
-            return 200, {"Success": True, "UserUnlocks": []}
+                # Realistic RAWeb softcore unlocks include CLIENT_WARNING_ID (101000001)
+                return 200, {"Success": True, "UserUnlocks": [101, 102, 999, 101000001]}
+            return 200, {"Success": True, "UserUnlocks": [101000001]}
 
         MockRAHandler.routes = {
             "gameid": handle_gameid,
@@ -280,14 +299,14 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
         )
         assert kv["hash"] == gba_hash and kv["status"] == "ok" and kv["earned"] == "2", kv
 
-        # 5. NES header stripping & Arcade filename hashing
+        # 5. NES header stripping & Arcade filename hashing (earned must be 0 despite 101000001 in UserUnlocks!)
         rc, kv, _, _ = run_helper(
             cmd_prefix,
             ["lookup", "--sdcard", str(sdcard), "--cache-dir", str(cache_dir),
              "--rom", str(nes_rom), "--emu", "FC"],
             env={"RA_API_URL": api_url},
         )
-        assert kv["hash"] == expected_nes_hash and kv["game_id"] == "3003" and kv["total"] == "1", kv
+        assert kv["hash"] == expected_nes_hash and kv["game_id"] == "3003" and kv["earned"] == "0" and kv["total"] == "1", kv
 
         rc, kv, _, _ = run_helper(
             cmd_prefix,
@@ -295,9 +314,9 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
              "--rom", str(fbn_rom), "--emu", "FBN"],
             env={"RA_API_URL": api_url},
         )
-        assert kv["hash"] == expected_fbn_hash and kv["game_id"] == "4004" and kv["total"] == "1", kv
+        assert kv["hash"] == expected_fbn_hash and kv["game_id"] == "4004" and kv["earned"] == "0" and kv["total"] == "1", kv
 
-        # 6. Game matched on RA with 0 official achievements -> status=none
+        # 6. Game matched on RA with 0 official achievements (only unofficial + 101000001) -> status=none
         rc, kv, _, _ = run_helper(
             cmd_prefix,
             ["lookup", "--sdcard", str(sdcard), "--cache-dir", str(cache_dir),
@@ -305,6 +324,28 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
             env={"RA_API_URL": api_url},
         )
         assert kv["status"] == "none" and kv["game_id"] == "2002" and kv["total"] == "0", kv
+
+        # 6b. Incompatible / wrong-region ROM (virtual game ID > 1000000000) -> status=incompatible (not 0/1!)
+        rc, kv, _, _ = run_helper(
+            cmd_prefix,
+            ["lookup", "--sdcard", str(sdcard), "--cache-dir", str(cache_dir),
+             "--rom", str(incompat_rom), "--emu", "GBA"],
+            env={"RA_API_URL": api_url},
+        )
+        assert kv["status"] == "incompatible" and kv["game_id"] == "1000007777" and kv["total"] == "0", kv
+
+        # 6c. Stale pak cache containing 101000001 self-heals on read without needing cache wipe
+        stale_kv = cache_dir / "games" / f"{gba_hash}.kv"
+        stale_kv.write_text(
+            "game_id=1001\ntotal=5\nearned=1\nmeta_ts=4102444800\nunlocks_ts=4102444800\n"
+            "core_ids=101,102,103,104,101000001\nunlock_ids=101000001\n"
+        )
+        rc, kv, _, _ = run_helper(
+            cmd_prefix,
+            ["lookup", "--sdcard", str(sdcard), "--cache-dir", str(cache_dir),
+             "--rom", str(gba_rom), "--emu", "GBA", "--offline-only"],
+        )
+        assert kv["status"] == "ok" and kv["earned"] == "0" and kv["total"] == "4", kv
 
         # 7. Unmatched hash -> status=unsupported
         rc, kv, _, _ = run_helper(
@@ -358,6 +399,7 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
                             {"ID": 12, "Flags": 3},
                             {"ID": 13, "Flags": 3},
                             {"ID": 14, "Flags": 5},  # unofficial
+                            {"ID": 101000001, "Flags": 3},  # client warning, ignored
                         ],
                     },
                     {
@@ -373,7 +415,7 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
             ra_offline_cache / f"startsession_{fresh_hash}.bin",
             {
                 "Success": True,
-                "Unlocks": [{"ID": 10, "When": 1700000000}],
+                "Unlocks": [{"ID": 10, "When": 1700000000}, {"ID": 101000001, "When": 1700000002}],
                 "HardcoreUnlocks": [{"ID": 11, "When": 1700000001}],
             },
         )
@@ -393,7 +435,7 @@ def run_suite_for_binary(label: str, cmd_prefix: list) -> None:
             "hash": fresh_hash,
             "game_id": "5555",
             "earned": "3",  # 10 (softcore) + 11 (hardcore) + 12 (pending offline)
-            "total": "4",   # 10, 11, 12, 13 (excludes unofficial 14 & bonus 99)
+            "total": "4",   # 10, 11, 12, 13 (excludes unofficial 14, bonus 99, warning 101000001)
             "pending": "1", # only 12 is still unsynced (13 was acked)
             "offline_ready": "1",
             "source": "nextui_cache",
@@ -431,6 +473,7 @@ def test_launch_sh_formatting() -> None:
             ("status=ok\nearned=36\ntotal=50\npending=2\noffline_ready=1", r"RA: 36/50\nRA Offline Ready (2 Unsynced)", "1"),
             ("status=ok\nearned=12\ntotal=40\npending=0\noffline_ready=0", r"RA: 12/40\nWiFi Required for RA", "1"),
             ("status=none\ngame_id=2002\ntotal=0", "RA None", "1"),
+            ("status=incompatible\ngame_id=1000007777\ntotal=0", "RA Incompatible ROM", "1"),
             ("status=unsupported\ngame_id=0", "RA Unsupported", "1"),
             ("status=wifi_required", "WiFi Required for RA", "1"),
             ("status=auth_invalid", "", "0"),
