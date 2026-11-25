@@ -644,35 +644,41 @@ ensure_ra_helper_binary() {
         return 0
     fi
 
-    cc_needed=""
+    local_cc=""
     if [ "$ARCH" = "arm64" ]; then
         if [ "$(uname -s)" = "Linux" ] && [ "$(uname -m)" = "aarch64" ]; then
-            cc_needed="gcc"
-        else
-            cc_needed="aarch64-linux-gnu-gcc"
+            local_cc="gcc"
+        elif command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
+            local_cc="aarch64-linux-gnu-gcc"
+        elif command -v aarch64-unknown-linux-gnu-gcc >/dev/null 2>&1; then
+            local_cc="aarch64-unknown-linux-gnu-gcc"
         fi
     else
-        cc_needed="arm-linux-gnueabihf-gcc"
+        if command -v arm-linux-gnueabihf-gcc >/dev/null 2>&1; then
+            local_cc="arm-linux-gnueabihf-gcc"
+        elif command -v arm-unknown-linux-gnueabihf-gcc >/dev/null 2>&1; then
+            local_cc="arm-unknown-linux-gnueabihf-gcc"
+        fi
     fi
 
-    if command -v "$cc_needed" >/dev/null 2>&1 && command -v cmake >/dev/null 2>&1; then
-        log "Building bin/${ARCH}/ra-helper locally..."
+    if [ -n "$local_cc" ] && command -v cmake >/dev/null 2>&1; then
+        log "Building bin/${ARCH}/ra-helper locally (${local_cc})..."
         make -C "$REPO_ROOT/src/ra-helper" "$ARCH"
         return 0
     fi
 
     if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
         log "Building bin/${ARCH}/ra-helper via Docker..."
-        docker_pkg="gcc-aarch64-linux-gnu"
-        if [ "$ARCH" = "arm" ]; then
-            docker_pkg="gcc-arm-linux-gnueabihf"
-        fi
         docker run --rm -v "$REPO_ROOT:/work" -w /work/src/ra-helper ubuntu:24.04 sh -c \
-            "apt-get update -qq && apt-get install -y -qq build-essential cmake git ${docker_pkg} && make ${ARCH}"
+            "set -e; \
+            extra_pkg=''; \
+            if [ '${ARCH}' = 'arm64' ] && [ \"\$(uname -m)\" != 'aarch64' ]; then extra_pkg='gcc-aarch64-linux-gnu'; fi; \
+            if [ '${ARCH}' = 'arm' ]; then extra_pkg='gcc-arm-linux-gnueabihf'; fi; \
+            apt-get update -qq && apt-get install -y -qq build-essential cmake git \$extra_pkg && make ${ARCH}"
         return 0
     fi
 
-    warn "Skipping bin/${ARCH}/ra-helper (install ${cc_needed}+cmake or Docker to enable RetroAchievements support)."
+    warn "Skipping bin/${ARCH}/ra-helper (install Docker/Colima, or cmake + aarch64-unknown-linux-gnu-gcc on macOS, to enable RetroAchievements support)."
 }
 
 # ---------------------------------------------------------------------------

@@ -28,21 +28,32 @@ COMMON_CFLAGS := -O2 -Wall -Wextra -Wno-unused-parameter -DRC_HASH_NO_ENCRYPTED 
 	-I$(LIBCHDR_DIR)/include \
 	-I$(LIBCHDR_DIR)/deps/miniz-3.1.2
 
-# Detect native host architecture so ubuntu-24.04-arm CI uses native gcc for arm64
+# Detect native Linux aarch64 vs cross-compilers (Linux apt or macOS Homebrew toolchains)
+HOST_OS := $(shell uname -s)
 HOST_ARCH := $(shell uname -m)
-ifeq ($(HOST_ARCH),aarch64)
+ifeq ($(HOST_OS):$(HOST_ARCH),Linux:aarch64)
 	ARM64_CC ?= gcc
 	ARM64_AR ?= ar
 	ARM64_STRIP ?= strip
-else
+else ifneq ($(shell command -v aarch64-linux-gnu-gcc 2>/dev/null),)
 	ARM64_CC ?= aarch64-linux-gnu-gcc
 	ARM64_AR ?= aarch64-linux-gnu-ar
 	ARM64_STRIP ?= aarch64-linux-gnu-strip
+else
+	ARM64_CC ?= aarch64-unknown-linux-gnu-gcc
+	ARM64_AR ?= aarch64-unknown-linux-gnu-ar
+	ARM64_STRIP ?= aarch64-unknown-linux-gnu-strip
 endif
 
-ARM_CC ?= arm-linux-gnueabihf-gcc
-ARM_AR ?= arm-linux-gnueabihf-ar
-ARM_STRIP ?= arm-linux-gnueabihf-strip
+ifneq ($(shell command -v arm-linux-gnueabihf-gcc 2>/dev/null),)
+	ARM_CC ?= arm-linux-gnueabihf-gcc
+	ARM_AR ?= arm-linux-gnueabihf-ar
+	ARM_STRIP ?= arm-linux-gnueabihf-strip
+else
+	ARM_CC ?= arm-unknown-linux-gnueabihf-gcc
+	ARM_AR ?= arm-unknown-linux-gnueabihf-ar
+	ARM_STRIP ?= arm-unknown-linux-gnueabihf-strip
+endif
 
 HOST_CC ?= gcc
 
@@ -68,8 +79,8 @@ define build_target
 	mkdir -p $(BUILD_DIR)/$(1)/libchdr $(dir $(5))
 	cmake -S $(LIBCHDR_DIR) -B $(BUILD_DIR)/$(1)/libchdr \
 		-DCMAKE_SYSTEM_NAME=Linux \
-		-DCMAKE_C_COMPILER=$(2) \
-		-DCMAKE_AR=$(shell command -v $(3)) \
+		-DCMAKE_C_COMPILER=$$(command -v $(2)) \
+		-DCMAKE_AR=$$(command -v $(3)) \
 		-DCMAKE_BUILD_TYPE=Release \
 		-DBUILD_SHARED_LIBS=OFF \
 		-DWITH_SYSTEM_ZLIB=OFF \
