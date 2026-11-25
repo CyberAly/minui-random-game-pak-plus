@@ -67,6 +67,18 @@ read_presenter_version() {
     printf '0.13.4\n'
 }
 
+read_list_version() {
+    makefile="$REPO_ROOT/Makefile"
+    if [ -f "$makefile" ]; then
+        ver="$(sed -n 's/^MINUI_LIST_VERSION[[:space:]]*:=[[:space:]]*//p' "$makefile" | head -n 1 | tr -d '[:space:]')"
+        if [ -n "$ver" ]; then
+            printf '%s\n' "$ver"
+            return 0
+        fi
+    fi
+    printf '0.16.0\n'
+}
+
 resolve_platform() {
     raw="$(to_lower "$1")"
     case "$raw" in
@@ -128,6 +140,37 @@ presenter_nextui_download_url() {
     esac
 }
 
+list_download_url() {
+    platform="$1"
+    version="$2"
+    base="https://github.com/josegonzalez/minui-list/releases/download/${version}"
+    case "$platform" in
+        h700)
+            printf '%s/minui-list-h700-nextui\n' "$base"
+            ;;
+        tg5050)
+            printf '%s/minui-list-tg5050-nextui\n' "$base"
+            ;;
+        *)
+            printf '%s/minui-list-%s\n' "$base" "$platform"
+            ;;
+    esac
+}
+
+list_nextui_download_url() {
+    platform="$1"
+    version="$2"
+    base="https://github.com/josegonzalez/minui-list/releases/download/${version}"
+    case "$platform" in
+        tg5040 | my355)
+            printf '%s/minui-list-%s-nextui\n' "$base" "$platform"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 platform_arch() {
     case "$1" in
         tg5040 | tg5050 | h700 | my355)
@@ -145,7 +188,7 @@ Usage: scripts/deploy.sh [options]
 
 Deploys the working tree of this pak (including uncommitted changes) to a
 MinUI/NextUI handheld. Automatically downloads the target platform's
-minui-presenter binary if not already cached in bin/<platform>/.
+minui-presenter and minui-list binaries if not already cached in bin/<platform>/.
 
 Config file:
   If .deploy.env exists in the repo root (copy from .deploy.env.example), it is
@@ -169,7 +212,7 @@ Options:
       --serial <id>             ADB device serial (optional, if multiple devices)
   -c, --config <path>           Path to config env file (default: .deploy.env)
       --clean                   Delete existing target .pak folder before deploy
-      --force-download          Re-download minui-presenter binary even if cached
+      --force-download          Re-download UI binaries and rebuild ra-helper even if cached
       --logs                    Show the pak debug log after deploying
       --logs-only               Skip deploy and just print the pak debug log
       --follow-logs             Skip deploy and tail -f the pak debug log (adb/ssh)
@@ -628,6 +671,16 @@ ensure_presenter_binary() {
     fi
 }
 
+ensure_list_binary() {
+    version="$(read_list_version)"
+    url="$(list_download_url "$PLATFORM" "$version")"
+    download_binary_if_needed "$REPO_ROOT/bin/${PLATFORM}/minui-list" "$url" "bin/${PLATFORM}/minui-list"
+
+    if nextui_url="$(list_nextui_download_url "$PLATFORM" "$version" 2>/dev/null)"; then
+        download_binary_if_needed "$REPO_ROOT/bin/${PLATFORM}/minui-list-nextui" "$nextui_url" "bin/${PLATFORM}/minui-list-nextui"
+    fi
+}
+
 ensure_ra_helper_binary() {
     helper_path="$REPO_ROOT/bin/${ARCH}/ra-helper"
     need_rebuild=0
@@ -725,6 +778,14 @@ stage_pak() {
             chmod +x "$STAGE_DIR/bin/${PLATFORM}/minui-presenter-nextui"
         fi
 
+        cp "$REPO_ROOT/bin/${PLATFORM}/minui-list" "$STAGE_DIR/bin/${PLATFORM}/minui-list"
+        chmod +x "$STAGE_DIR/bin/${PLATFORM}/minui-list"
+
+        if [ -f "$REPO_ROOT/bin/${PLATFORM}/minui-list-nextui" ]; then
+            cp "$REPO_ROOT/bin/${PLATFORM}/minui-list-nextui" "$STAGE_DIR/bin/${PLATFORM}/minui-list-nextui"
+            chmod +x "$STAGE_DIR/bin/${PLATFORM}/minui-list-nextui"
+        fi
+
         if [ -f "$REPO_ROOT/bin/${ARCH}/ra-helper" ]; then
             mkdir -p "$STAGE_DIR/bin/${ARCH}"
             cp "$REPO_ROOT/bin/${ARCH}/ra-helper" "$STAGE_DIR/bin/${ARCH}/ra-helper"
@@ -747,13 +808,15 @@ deploy_adb() {
     quoted_launch="$(shell_quote "$TARGET_PAK_DIR/launch.sh")"
     quoted_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter")"
     quoted_nextui_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter-nextui")"
+    quoted_list_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-list")"
+    quoted_list_nextui_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-list-nextui")"
     quoted_ra_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${ARCH}/ra-helper")"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         [ "$DEPLOY_CLEAN" -eq 1 ] && log "[dry-run] adb shell rm -rf $quoted_dir"
         log "[dry-run] adb shell mkdir -p $quoted_dir"
         log "[dry-run] adb push <staged-pak>/. $TARGET_PAK_DIR"
-        log "[dry-run] adb shell chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_ra_bin"
+        log "[dry-run] adb shell chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_list_bin $quoted_list_nextui_bin $quoted_ra_bin"
         return 0
     fi
 
@@ -764,7 +827,7 @@ deploy_adb() {
 
     adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} shell "mkdir -p $quoted_dir"
     adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} push "$STAGE_DIR/." "$TARGET_PAK_DIR"
-    adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} shell "{ chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_ra_bin 2>/dev/null || true; } && test -f $quoted_launch"
+    adb ${ADB_ARGS[@]+"${ADB_ARGS[@]}"} shell "{ chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_list_bin $quoted_list_nextui_bin $quoted_ra_bin 2>/dev/null || true; } && test -f $quoted_launch"
 }
 
 deploy_ssh() {
@@ -772,13 +835,15 @@ deploy_ssh() {
     quoted_launch="$(shell_quote "$TARGET_PAK_DIR/launch.sh")"
     quoted_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter")"
     quoted_nextui_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter-nextui")"
+    quoted_list_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-list")"
+    quoted_list_nextui_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-list-nextui")"
     quoted_ra_bin="$(shell_quote "$TARGET_PAK_DIR/bin/${ARCH}/ra-helper")"
 
     remote_cmd=""
     if [ "$DEPLOY_CLEAN" -eq 1 ]; then
         remote_cmd="rm -rf $quoted_dir && "
     fi
-    remote_cmd="${remote_cmd}mkdir -p $quoted_dir && tar -xf - -C $quoted_dir && { chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_ra_bin 2>/dev/null || true; } && test -f $quoted_launch"
+    remote_cmd="${remote_cmd}mkdir -p $quoted_dir && tar -xf - -C $quoted_dir && { chmod +x $quoted_launch $quoted_bin $quoted_nextui_bin $quoted_list_bin $quoted_list_nextui_bin $quoted_ra_bin 2>/dev/null || true; } && test -f $quoted_launch"
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log "[dry-run] tar --format=ustar -C <staged-pak> -cf - . | ssh ${DEPLOY_USER}@${DEPLOY_HOST} (port ${DEPLOY_PORT}) \"$remote_cmd\""
@@ -810,6 +875,8 @@ deploy_local() {
         "$TARGET_PAK_DIR/launch.sh" \
         "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter" \
         "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-presenter-nextui" \
+        "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-list" \
+        "$TARGET_PAK_DIR/bin/${PLATFORM}/minui-list-nextui" \
         "$TARGET_PAK_DIR/bin/${ARCH}/ra-helper" 2>/dev/null || true
     # Clean any stray macOS metadata files on FAT32/exFAT SD cards
     find "$TARGET_PAK_DIR" \( -name '._*' -o -name '.DS_Store' \) -delete 2>/dev/null || true
@@ -833,6 +900,7 @@ case "$DEPLOY_METHOD" in
 esac
 
 ensure_presenter_binary
+ensure_list_binary
 ensure_ra_helper_binary
 stage_pak
 

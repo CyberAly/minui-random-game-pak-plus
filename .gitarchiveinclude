@@ -7,5 +7,14 @@ bin/rg35xxplus/minui-presenter
 bin/tg5040/minui-presenter
 bin/tg5040/minui-presenter-nextui
 bin/tg5050/minui-presenter
+bin/h700/minui-list
+bin/miyoomini/minui-list
+bin/my282/minui-list
+bin/my355/minui-list
+bin/my355/minui-list-nextui
+bin/rg35xxplus/minui-list
+bin/tg5040/minui-list
+bin/tg5040/minui-list-nextui
+bin/tg5050/minui-list
 bin/arm64/ra-helper
 bin/arm/ra-helper
