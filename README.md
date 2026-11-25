@@ -16,14 +16,16 @@ The original `minui-random-game.pak` picks a random file from `/Roms` and immedi
   - Displays softcore progress (e.g. `RA: 34/50`), whether the game is cached in NextUI for offline play (`RA Offline Ready`, plus pending unsynced count from NextUI's offline ledger) or needs Wi-Fi (`WiFi Required for RA`), as well as `RA None` (no official set), `RA Incompatible ROM` (wrong region/version or untested dump), and `RA Unsupported` (unmatched ROM/hash).
   - Shows NextUI's native top-right hardware bar (Wi-Fi status, clock, and battery) so you can immediately tell if you're connected.
   - Uses a small static C helper (`ra-helper`, built with `rcheevos` + `libchdr` + `miniz`) for 100% ROM hashing parity with NextUI across cartridge, archive (`.zip`), arcade, and disc (`.chd`/`.cue`/`.iso`/`.pbp`) systems, with lazy per-roll caching and strictly read-only inspection of NextUI's `.ra/offline/` cache and ledger.
-- **Instant Re-roll & Cancel Controls**: Not in the mood for the picked game? Press `Y` to roll another game immediately or `B` to return to the menu—no more launching a game just to quit and re-open the pak.
+- **More Options & Filters Menu (`X`)**: Press `X` on the preview screen to open the **More Options** menu (powered by `minui-list`):
+  - **Filters → Games with RetroAchievements**: Toggles an active session filter that shuffles through your library without repeats until it finds a game with at least one official RetroAchievement (staying active for subsequent `Y` re-rolls until toggled off or cleared via **Clear All Filters**, and automatically falling back to local/NextUI caches if Wi-Fi is unavailable).
+- **Instant Re-roll & Cancel Controls**: Not in the mood for the picked game? Press `Y` to roll another game immediately, `X` to open **More Options**, or `B` to return to the menu—no more launching a game just to quit and re-open the pak.
 - **Faster, Smarter ROM Scanning**:
   - Scans your `Roms/` directory **once** per session so re-rolling is near-instant (no repeated `find` scans or artificial startup delay).
   - Skips `*.disabled` folders and systems that don't have an installed emulator pak (`Emus/<PLATFORM>/<EMU>.pak` or `.system/<PLATFORM>/paks/Emus/<EMU>.pak`).
   - Filters out non-game files commonly stored alongside ROMs: artwork folders and images (`Imgs/*`, `.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`), metadata/databases (`.xml`, `.json`, `.db`), save files (`.sav`, `.srm`), hidden files, `.txt`, and `.log`.
 - **Clean Titles & `map.txt` Support**: Reads MinUI `map.txt` files to display proper game names (especially helpful for arcade/MAME sets), falls back to stripping region/revision tags like `(USA)` and `[!]`, and cleans system folder names (e.g., `01) Game Boy Advance (GBA)` → `Game Boy Advance`).
 - **Better Randomness & No Back-to-Back Repeats**: Uses `/dev/urandom` (with a deterministic fallback) instead of `(timestamp + PID) % total`, and avoids picking the exact same game twice in a row when re-rolling.
-- **Built-in Multi-Transport Deploy Script (`scripts/deploy.sh`)**: Automatically fetches the matching `minui-presenter` binary for your platform, builds `ra-helper` (via local cross-compiler or Docker if available), and deploys directly from your computer via USB (ADB), Wi-Fi (SSH), or a mounted microSD card—plus built-in remote debug log viewing.
+- **Built-in Multi-Transport Deploy Script (`scripts/deploy.sh`)**: Automatically fetches the matching `minui-presenter` and `minui-list` binaries for your platform, builds `ra-helper` (via local cross-compiler or Docker if available), and deploys directly from your computer via USB (ADB), Wi-Fi (SSH), or a mounted microSD card—plus built-in remote debug log viewing.
 
 ## Supported Platforms
 
@@ -44,7 +46,8 @@ On your handheld, open `Tools > Random Game` (or whatever custom name you deploy
 | Button | Action |
 | --- | --- |
 | `A` | **PLAY** — Launch the selected game and add it to MinUI Recents |
-| `Y` | **REROLL** — Pick another random game |
+| `Y` | **REROLL** — Pick another random game (respecting any active filters) |
+| `X` | **OPTIONS** — Open the **More Options** menu (e.g., **Filters → Games with RetroAchievements**) |
 | `B` | **QUIT** — Exit back to the main menu |
 
 **Cover art lookup:** The pak automatically checks `<rom_dir>/.media/<rom_name>.{png,jpg,jpeg}`, `<rom_dir>/.media/<rom_filename>.png`, `<rom_dir>/Imgs/<rom_name>.{png,jpg}`, and `<parent_dir>/.media/<rom_name>.{png,jpg}`. If no art is found, it falls back to a clean centered text layout.
@@ -53,7 +56,7 @@ On your handheld, open `Tools > Random Game` (or whatever custom name you deploy
 
 ## Building & Deploying to Your Unit
 
-The core pak is a POSIX shell script (`launch.sh`) paired with prebuilt [`minui-presenter`](https://github.com/josegonzalez/minui-presenter) binaries and an optional static C helper (`src/ra-helper`) for NextUI RetroAchievements support. If `ra-helper` isn't built or you're on MinUI, the pak still runs cleanly without RetroAchievements.
+The core pak is a POSIX shell script (`launch.sh`) paired with prebuilt [`minui-presenter`](https://github.com/josegonzalez/minui-presenter) and [`minui-list`](https://github.com/josegonzalez/minui-list) binaries and an optional static C helper (`src/ra-helper`) for NextUI RetroAchievements support. If `ra-helper` isn't built or you're on MinUI, the pak still runs cleanly without RetroAchievements.
 
 ### Prerequisites
 
@@ -75,7 +78,7 @@ cd minui-random-game-pak-plus
 
 ### Step 2: Deploy Directly with `scripts/deploy.sh` (Recommended)
 
-`scripts/deploy.sh` is the fastest way to build and install the pak onto your handheld. On its first run, it automatically downloads and caches the correct `minui-presenter` binary under `bin/<platform>/`, stages only the needed files (`launch.sh`, `pak.json`, and your platform's binary), and copies them to `/Tools/<PLATFORM>/Random Game.pak/` on your SD card.
+`scripts/deploy.sh` is the fastest way to build and install the pak onto your handheld. On its first run, it automatically downloads and caches the correct `minui-presenter` and `minui-list` binaries under `bin/<platform>/`, stages only the needed files (`launch.sh`, `pak.json`, and your platform's binaries), and copies them to `/Tools/<PLATFORM>/Random Game.pak/` on your SD card.
 
 > [!TIP]
 > Want to try this alongside the original `Random Game` pak without overwriting it? Pass `--name "Random Game Plus"` to any command below to install it side-by-side under `Tools > Random Game Plus`.
@@ -141,7 +144,7 @@ CLI flags always override values in `.deploy.env`. Other handy flags include `--
 
 If you prefer a portable multi-platform `.pak.zip` archive (for manual SD card installation or sharing), use the `Makefile`:
 
-1. Download the `minui-presenter` binaries for all supported platforms (or a single platform with `make bin/<PLATFORM>/minui-presenter`):
+1. Download the `minui-presenter` and `minui-list` binaries for all supported platforms (or a single platform with `make bin/<PLATFORM>/minui-presenter bin/<PLATFORM>/minui-list`):
    ```sh
    make build
    ```
@@ -153,7 +156,7 @@ If you prefer a portable multi-platform `.pak.zip` archive (for manual SD card i
 3. Install onto your SD card manually:
    - Mount your MinUI/NextUI SD card on your computer.
    - Extract `dist/Random Game.pak.zip` into `/Tools/<PLATFORM>/Random Game.pak/` on the SD card.
-   - Confirm that `/Tools/<PLATFORM>/Random Game.pak/launch.sh` and `/Tools/<PLATFORM>/Random Game.pak/bin/<PLATFORM>/minui-presenter` exist.
+   - Confirm that `/Tools/<PLATFORM>/Random Game.pak/launch.sh`, `/Tools/<PLATFORM>/Random Game.pak/bin/<PLATFORM>/minui-presenter`, and `/Tools/<PLATFORM>/Random Game.pak/bin/<PLATFORM>/minui-list` exist.
    - Safely eject the SD card, insert it into your handheld, and launch `Tools > Random Game`.
 
 > [!IMPORTANT]
@@ -183,4 +186,5 @@ If you deployed over ADB or SSH, you can inspect or stream logs directly from yo
 
 - Original project: [`josegonzalez/minui-random-game-pak`](https://github.com/josegonzalez/minui-random-game-pak) by Jose Diaz-Gonzalez
 - UI presenter binary: [`josegonzalez/minui-presenter`](https://github.com/josegonzalez/minui-presenter)
+- UI menu/list binary: [`josegonzalez/minui-list`](https://github.com/josegonzalez/minui-list)
 - Licensed under the [MIT License](LICENSE).

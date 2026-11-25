@@ -26,11 +26,20 @@ if [ "$DEVICE" = "rgsp" ]; then
 fi
 
 ROM_LIST="/tmp/random_game_roms_$$.txt"
+SHUFFLE_LIST="/tmp/random_game_shuffle_$$.txt"
+MENU_INPUT="/tmp/random_game_menu_in_$$.txt"
+MENU_OUTPUT="/tmp/random_game_menu_out_$$.txt"
 PRESENTER_PID=""
 PRESENTER_BIN="minui-presenter"
+LIST_BIN="minui-list"
+HAS_LIST_BIN=0
 RA_ENABLED=0
 RA_CACHE_DIR="$USERDATA_PATH/$PAK_NAME/ra_cache"
 RA_DISPLAY=""
+RA_STATUS=""
+RA_TOTAL=0
+RA_HAS_ACHIEVEMENTS=0
+FILTER_RA_ONLY=0
 
 is_nextui() {
     [ -f "$SDCARD_PATH/.userdata/shared/minuisettings.txt" ]
@@ -40,6 +49,13 @@ select_presenter() {
     PRESENTER_BIN="minui-presenter"
     if is_nextui && command -v minui-presenter-nextui >/dev/null 2>&1; then
         PRESENTER_BIN="minui-presenter-nextui"
+    fi
+}
+
+select_list() {
+    LIST_BIN="minui-list"
+    if is_nextui && command -v minui-list-nextui >/dev/null 2>&1; then
+        LIST_BIN="minui-list-nextui"
     fi
 }
 
@@ -60,17 +76,30 @@ init_retroachievements() {
 lookup_retroachievements() {
     ROM_FILE="$1"
     EMU_TAG="$2"
+    OFFLINE_ONLY="${3:-0}"
     RA_DISPLAY=""
+    RA_STATUS=""
+    RA_TOTAL=0
+    RA_HAS_ACHIEVEMENTS=0
 
     if [ "$RA_ENABLED" -ne 1 ]; then
         return 0
     fi
 
-    ra_out="$(ra-helper lookup \
-        --sdcard "$SDCARD_PATH" \
-        --cache-dir "$RA_CACHE_DIR" \
-        --rom "$ROM_FILE" \
-        --emu "$EMU_TAG" 2>/dev/null || true)"
+    if [ "$OFFLINE_ONLY" -eq 1 ]; then
+        ra_out="$(ra-helper lookup \
+            --sdcard "$SDCARD_PATH" \
+            --cache-dir "$RA_CACHE_DIR" \
+            --rom "$ROM_FILE" \
+            --emu "$EMU_TAG" \
+            --offline-only 2>/dev/null || true)"
+    else
+        ra_out="$(ra-helper lookup \
+            --sdcard "$SDCARD_PATH" \
+            --cache-dir "$RA_CACHE_DIR" \
+            --rom "$ROM_FILE" \
+            --emu "$EMU_TAG" 2>/dev/null || true)"
+    fi
 
     if [ -z "$ra_out" ]; then
         return 0
@@ -94,8 +123,16 @@ lookup_retroachievements() {
 $ra_out
 EOF
 
+    RA_STATUS="$ra_status"
+    if [ "$ra_total" -ge 0 ] 2>/dev/null; then
+        RA_TOTAL="$ra_total"
+    fi
+
     case "$ra_status" in
         ok)
+            if [ "$RA_TOTAL" -ge 1 ] 2>/dev/null; then
+                RA_HAS_ACHIEVEMENTS=1
+            fi
             if [ "$ra_offline_ready" = "1" ]; then
                 if [ "$ra_pending" -gt 0 ] 2>/dev/null; then
                     RA_DISPLAY="RA: ${ra_earned}/${ra_total}\nRA Offline Ready (${ra_pending} Unsynced)"
@@ -116,7 +153,12 @@ EOF
             RA_DISPLAY="RA Unsupported"
             ;;
         wifi_required)
-            RA_DISPLAY="WiFi Required for RA"
+            if [ "$RA_TOTAL" -ge 1 ] 2>/dev/null; then
+                RA_HAS_ACHIEVEMENTS=1
+                RA_DISPLAY="RA: ${ra_total} Achievements\nWiFi Required for RA"
+            else
+                RA_DISPLAY="WiFi Required for RA"
+            fi
             ;;
         auth_invalid)
             echo "RetroAchievements credentials invalid; disabling RA display for this session." 1>&2
@@ -337,6 +379,61 @@ show_message() {
     fi
 }
 
+active_filter_count() {
+    count=0
+    if [ "$FILTER_RA_ONLY" -eq 1 ]; then
+        count=$((count + 1))
+    fi
+    echo "$count"
+}
+
+has_active_filters() {
+    [ "$(active_filter_count)" -gt 0 ]
+}
+
+clear_all_filters() {
+    FILTER_RA_ONLY=0
+}
+
+# Hook for future static/metadata filters (console, genre, hidden games, etc.)
+# evaluated before running heavier lookups such as RetroAchievements hashing/API calls.
+rom_matches_static_filters() {
+    _cand_file="$1"
+    _cand_emu_folder="$2"
+    _cand_emu_name="$3"
+    return 0
+}
+
+build_shuffled_rom_list() {
+    src_file="$1"
+    prev_file="$2"
+    seed="$3"
+    out_file="$4"
+
+    awk -v prev="$prev_file" -v seed="$seed" '
+    {
+        lines[++n] = $0
+    }
+    END {
+        srand(seed)
+        for (i = n; i > 1; i--) {
+            j = int(rand() * i) + 1
+            tmp = lines[i]; lines[i] = lines[j]; lines[j] = tmp
+        }
+        has_prev = 0
+        for (i = 1; i <= n; i++) {
+            if (prev != "" && lines[i] == prev && n > 1) {
+                has_prev = 1
+            } else {
+                print lines[i]
+            }
+        }
+        if (has_prev) {
+            print prev
+        }
+    }' "$src_file" >"$out_file"
+}
+
 show_preview() {
     TITLE="$1"
     SYSTEM="$2"
@@ -353,52 +450,284 @@ show_preview() {
     if [ -n "$COVER_ART" ]; then
         if [ "$RA_ENABLED" -eq 1 ]; then
             # Offset top-aligned message by one row so it clears the top-right hardware bar
-            "$PRESENTER_BIN" \
+            set -- \
                 --message "\n${MESSAGE}" \
                 --message-alignment top \
                 --background-image "$COVER_ART" \
                 --show-pill \
-                --show-hardware-group \
-                --confirm-button A --confirm-text "PLAY" --confirm-show \
-                --action-button Y --action-text "REROLL" --action-show \
-                --cancel-button B --cancel-text "QUIT" --cancel-show \
-                --timeout 0
+                --show-hardware-group
         else
-            "$PRESENTER_BIN" \
+            set -- \
                 --message "$MESSAGE" \
                 --message-alignment top \
                 --background-image "$COVER_ART" \
-                --show-pill \
-                --confirm-button A --confirm-text "PLAY" --confirm-show \
-                --action-button Y --action-text "REROLL" --action-show \
-                --cancel-button B --cancel-text "QUIT" --cancel-show \
-                --timeout 0
+                --show-pill
         fi
     else
         if [ "$RA_ENABLED" -eq 1 ]; then
-            "$PRESENTER_BIN" \
+            set -- \
                 --message "$MESSAGE" \
                 --message-alignment middle \
-                --show-hardware-group \
-                --confirm-button A --confirm-text "PLAY" --confirm-show \
-                --action-button Y --action-text "REROLL" --action-show \
-                --cancel-button B --cancel-text "QUIT" --cancel-show \
-                --timeout 0
+                --show-hardware-group
         else
-            "$PRESENTER_BIN" \
+            set -- \
                 --message "$MESSAGE" \
-                --message-alignment middle \
-                --confirm-button A --confirm-text "PLAY" --confirm-show \
-                --action-button Y --action-text "REROLL" --action-show \
-                --cancel-button B --cancel-text "QUIT" --cancel-show \
-                --timeout 0
+                --message-alignment middle
         fi
     fi
+
+    if [ "$HAS_LIST_BIN" -eq 1 ]; then
+        set -- "$@" --inaction-button X --inaction-text "OPTIONS" --inaction-show
+    fi
+
+    "$PRESENTER_BIN" "$@" \
+        --confirm-button A --confirm-text "PLAY" --confirm-show \
+        --action-button Y --action-text "REROLL" --action-show \
+        --cancel-button B --cancel-text "QUIT" --cancel-show \
+        --timeout 0
+}
+
+run_menu() {
+    menu_title="$1"
+    menu_file="$2"
+    out_file="$3"
+
+    : >"$out_file"
+    stop_presenter
+
+    "$LIST_BIN" \
+        --file "$menu_file" \
+        --format text \
+        --title "$menu_title" \
+        --write-location "$out_file" \
+        --confirm-button A --confirm-text "SELECT" \
+        --cancel-button B --cancel-text "BACK" \
+        --scroll-method pong \
+        --disable-auto-sleep
+}
+
+show_filters_menu() {
+    while true; do
+        : >"$MENU_INPUT"
+        if [ "$FILTER_RA_ONLY" -eq 1 ]; then
+            printf '%s\n' "Games with RetroAchievements: On" >>"$MENU_INPUT"
+        else
+            printf '%s\n' "Games with RetroAchievements: Off" >>"$MENU_INPUT"
+        fi
+        # Future filters (console, genre, etc.) can be appended here.
+        if has_active_filters; then
+            printf '%s\n' "Clear All Filters" >>"$MENU_INPUT"
+        fi
+
+        run_menu "Filters" "$MENU_INPUT" "$MENU_OUTPUT"
+        menu_rc=$?
+
+        case "$menu_rc" in
+            0)
+                selection="$(tr -d '\r\n' <"$MENU_OUTPUT")"
+                case "$selection" in
+                    "Games with RetroAchievements: Off")
+                        if [ "$RA_ENABLED" -ne 1 ]; then
+                            if ! is_nextui; then
+                                show_message "RetroAchievements requires NextUI." 2
+                            elif ! command -v ra-helper >/dev/null 2>&1; then
+                                show_message "ra-helper not found." 2
+                            else
+                                show_message "RetroAchievements is not enabled\nor credentials are invalid." 2
+                            fi
+                            continue
+                        fi
+                        FILTER_RA_ONLY=1
+                        return 0
+                        ;;
+                    "Games with RetroAchievements: On")
+                        FILTER_RA_ONLY=0
+                        return 0
+                        ;;
+                    "Clear All Filters")
+                        clear_all_filters
+                        return 0
+                        ;;
+                esac
+                ;;
+            2)
+                return 2
+                ;;
+            3 | 130 | 143)
+                return "$menu_rc"
+                ;;
+            *)
+                return 2
+                ;;
+        esac
+    done
+}
+
+show_more_options_menu() {
+    while true; do
+        : >"$MENU_INPUT"
+        active_count="$(active_filter_count)"
+        if [ "$active_count" -gt 0 ]; then
+            printf 'Filters (%s Active)\n' "$active_count" >>"$MENU_INPUT"
+        else
+            printf '%s\n' "Filters" >>"$MENU_INPUT"
+        fi
+        # Future More Options items (e.g. "Hide Game") can be appended here.
+
+        run_menu "More Options" "$MENU_INPUT" "$MENU_OUTPUT"
+        menu_rc=$?
+
+        case "$menu_rc" in
+            0)
+                selection="$(tr -d '\r\n' <"$MENU_OUTPUT")"
+                case "$selection" in
+                    Filters | "Filters ("*)
+                        show_filters_menu
+                        sub_rc=$?
+                        case "$sub_rc" in
+                            0)
+                                return 0
+                                ;;
+                            2)
+                                continue
+                                ;;
+                            3 | 130 | 143)
+                                return "$sub_rc"
+                                ;;
+                        esac
+                        ;;
+                esac
+                ;;
+            2)
+                return 2
+                ;;
+            3 | 130 | 143)
+                return "$menu_rc"
+                ;;
+            *)
+                return 2
+                ;;
+        esac
+    done
+}
+
+roll_random_game() {
+    if ! has_active_filters; then
+        ROLL_COUNTER=$((ROLL_COUNTER + 1))
+        INDEX="$(pick_random_index "$TOTAL" "$PREV_INDEX" "$ROLL_COUNTER")"
+        CAND_FILE="$(get_rom_at_index "$ROM_LIST" "$INDEX")"
+        if [ "$TOTAL" -gt 1 ] && [ "$CAND_FILE" = "$FILE" ]; then
+            INDEX="$((INDEX % TOTAL + 1))"
+            CAND_FILE="$(get_rom_at_index "$ROM_LIST" "$INDEX")"
+        fi
+
+        CAND_EMU_FOLDER="$(get_emu_folder "$CAND_FILE")"
+        CAND_EMU_NAME="$(get_emu_name "$CAND_EMU_FOLDER")"
+        CAND_EMU_PATH="$(get_emu_path "$CAND_EMU_NAME")"
+        if [ -z "$CAND_EMU_PATH" ]; then
+            show_message "Could not find an emulator for this game." 2
+            return 1
+        fi
+
+        PREV_INDEX="$INDEX"
+        FILE="$CAND_FILE"
+        EMU_FOLDER="$CAND_EMU_FOLDER"
+        EMU_NAME="$CAND_EMU_NAME"
+        EMU_PATH="$CAND_EMU_PATH"
+        ROM_ALIAS="$(get_rom_alias "$FILE")"
+        SYSTEM_NAME="$(get_system_name "$EMU_FOLDER")"
+        COVER_ART="$(get_cover_art "$FILE" || true)"
+        lookup_retroachievements "$FILE" "$EMU_NAME"
+        return 0
+    fi
+
+    SAVED_RA_DISPLAY="$RA_DISPLAY"
+    if [ "$FILTER_RA_ONLY" -eq 1 ]; then
+        show_message "Finding a game with RetroAchievements..."
+    else
+        show_message "Finding a matching game..."
+    fi
+
+    ROLL_COUNTER=$((ROLL_COUNTER + 1))
+    SHUFFLE_SEED="$(get_random_number "$ROLL_COUNTER")"
+    build_shuffled_rom_list "$ROM_LIST" "$FILE" "$SHUFFLE_SEED" "$SHUFFLE_LIST"
+
+    FOUND=0
+    CONSECUTIVE_WIFI_FAILS=0
+    FORCE_OFFLINE=0
+    SAW_WIFI_REQUIRED=0
+    AUTH_FAILED=0
+
+    while IFS= read -r CAND_FILE; do
+        [ -n "$CAND_FILE" ] || continue
+
+        CAND_EMU_FOLDER="$(get_emu_folder "$CAND_FILE")"
+        CAND_EMU_NAME="$(get_emu_name "$CAND_EMU_FOLDER")"
+        CAND_EMU_PATH="$(get_emu_path "$CAND_EMU_NAME" || true)"
+        [ -n "$CAND_EMU_PATH" ] || continue
+
+        rom_matches_static_filters "$CAND_FILE" "$CAND_EMU_FOLDER" "$CAND_EMU_NAME" || continue
+
+        if [ "$FILTER_RA_ONLY" -eq 1 ]; then
+            lookup_retroachievements "$CAND_FILE" "$CAND_EMU_NAME" "$FORCE_OFFLINE"
+            if [ "$RA_ENABLED" -ne 1 ]; then
+                AUTH_FAILED=1
+                break
+            fi
+            if [ "$RA_HAS_ACHIEVEMENTS" -ne 1 ]; then
+                if [ "$RA_STATUS" = "wifi_required" ]; then
+                    SAW_WIFI_REQUIRED=1
+                    CONSECUTIVE_WIFI_FAILS=$((CONSECUTIVE_WIFI_FAILS + 1))
+                    if [ "$CONSECUTIVE_WIFI_FAILS" -ge 2 ]; then
+                        FORCE_OFFLINE=1
+                    fi
+                else
+                    CONSECUTIVE_WIFI_FAILS=0
+                fi
+                continue
+            fi
+        else
+            lookup_retroachievements "$CAND_FILE" "$CAND_EMU_NAME"
+        fi
+
+        FOUND=1
+        PREV_INDEX=""
+        FILE="$CAND_FILE"
+        EMU_FOLDER="$CAND_EMU_FOLDER"
+        EMU_NAME="$CAND_EMU_NAME"
+        EMU_PATH="$CAND_EMU_PATH"
+        ROM_ALIAS="$(get_rom_alias "$FILE")"
+        SYSTEM_NAME="$(get_system_name "$EMU_FOLDER")"
+        COVER_ART="$(get_cover_art "$FILE" || true)"
+        break
+    done <"$SHUFFLE_LIST"
+
+    if [ "$FOUND" -eq 1 ]; then
+        return 0
+    fi
+
+    RA_DISPLAY="$SAVED_RA_DISPLAY"
+    if [ "$AUTH_FAILED" -eq 1 ]; then
+        FILTER_RA_ONLY=0
+        RA_DISPLAY=""
+        show_message "RetroAchievements login invalid.\nFilter disabled." 3
+    elif [ "$FILTER_RA_ONLY" -eq 1 ] && [ "$SAW_WIFI_REQUIRED" -eq 1 ]; then
+        FILTER_RA_ONLY=0
+        show_message "No cached games with RetroAchievements found.\nConnect to Wi-Fi and try again." 3
+    elif [ "$FILTER_RA_ONLY" -eq 1 ]; then
+        FILTER_RA_ONLY=0
+        show_message "No games with RetroAchievements found." 3
+    else
+        clear_all_filters
+        show_message "No games matched your active filters." 3
+    fi
+    return 2
 }
 
 cleanup() {
-    rm -f /tmp/stay_awake "$ROM_LIST"
+    rm -f /tmp/stay_awake "$ROM_LIST" "$SHUFFLE_LIST" "$MENU_INPUT" "$MENU_OUTPUT"
     stop_presenter
+    killall minui-list minui-list-nextui >/dev/null 2>&1 || true
 }
 
 main() {
@@ -422,6 +751,12 @@ main() {
         return 1
     fi
 
+    select_list
+    HAS_LIST_BIN=0
+    if command -v "$LIST_BIN" >/dev/null 2>&1; then
+        HAS_LIST_BIN=1
+    fi
+
     init_retroachievements
 
     show_message "Finding a random game..."
@@ -433,29 +768,27 @@ main() {
         return 1
     fi
 
+    FILE=""
+    EMU_FOLDER=""
+    EMU_NAME=""
+    EMU_PATH=""
+    ROM_ALIAS=""
+    SYSTEM_NAME=""
+    COVER_ART=""
     PREV_INDEX=""
     ROLL_COUNTER=0
     NEED_ROLL=1
 
     while true; do
         if [ "$NEED_ROLL" -eq 1 ]; then
-            ROLL_COUNTER=$((ROLL_COUNTER + 1))
-            INDEX="$(pick_random_index "$TOTAL" "$PREV_INDEX" "$ROLL_COUNTER")"
-            PREV_INDEX="$INDEX"
-            FILE="$(get_rom_at_index "$ROM_LIST" "$INDEX")"
-
-            EMU_FOLDER="$(get_emu_folder "$FILE")"
-            EMU_NAME="$(get_emu_name "$EMU_FOLDER")"
-            EMU_PATH="$(get_emu_path "$EMU_NAME")"
-            if [ -z "$EMU_PATH" ]; then
-                show_message "Could not find an emulator for this game." 2
+            roll_random_game
+            ROLL_RC=$?
+            if [ "$ROLL_RC" -eq 1 ]; then
                 return 1
             fi
-
-            ROM_ALIAS="$(get_rom_alias "$FILE")"
-            SYSTEM_NAME="$(get_system_name "$EMU_FOLDER")"
-            COVER_ART="$(get_cover_art "$FILE" || true)"
-            lookup_retroachievements "$FILE" "$EMU_NAME"
+            if [ "$ROLL_RC" -ne 0 ] && [ -z "$FILE" ]; then
+                return 1
+            fi
             NEED_ROLL=0
         fi
 
@@ -469,6 +802,20 @@ main() {
             4)
                 NEED_ROLL=1
                 ;;
+            5)
+                if [ "$HAS_LIST_BIN" -eq 1 ]; then
+                    show_more_options_menu
+                    MENU_EXIT=$?
+                    case "$MENU_EXIT" in
+                        0)
+                            NEED_ROLL=1
+                            ;;
+                        3 | 130 | 143)
+                            return 0
+                            ;;
+                    esac
+                fi
+                ;;
             2 | 130 | 143)
                 return 0
                 ;;
@@ -481,7 +828,7 @@ main() {
         esac
     done
 
-    rm -f /tmp/stay_awake "$ROM_LIST"
+    rm -f /tmp/stay_awake "$ROM_LIST" "$SHUFFLE_LIST" "$MENU_INPUT" "$MENU_OUTPUT"
 
     add_game_to_recents "$FILE" "$ROM_ALIAS"
     stop_presenter

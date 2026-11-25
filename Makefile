@@ -7,16 +7,19 @@ PUSH_PLATFORM ?= tg5040
 
 PLATFORMS := h700 miyoomini my282 my355 rg35xxplus tg5040 tg5050
 MINUI_PRESENTER_VERSION := 0.13.4
+MINUI_LIST_VERSION := 0.16.0
 
 NEXTUI_DUAL_PLATFORMS := tg5040 my355
 RA_HELPER_ARCHES := arm64 arm
 
 clean:
-	rm -f bin/*/minui-presenter bin/*/minui-presenter-nextui bin/*/ra-helper || true
+	rm -f bin/*/minui-presenter bin/*/minui-presenter-nextui bin/*/minui-list bin/*/minui-list-nextui bin/*/ra-helper || true
 	$(MAKE) -C src/ra-helper clean
 
 build: $(foreach platform,$(PLATFORMS),bin/$(platform)/minui-presenter) \
 	$(foreach platform,$(NEXTUI_DUAL_PLATFORMS),bin/$(platform)/minui-presenter-nextui) \
+	$(foreach platform,$(PLATFORMS),bin/$(platform)/minui-list) \
+	$(foreach platform,$(NEXTUI_DUAL_PLATFORMS),bin/$(platform)/minui-list-nextui) \
 	$(foreach arch,$(RA_HELPER_ARCHES),bin/$(arch)/ra-helper)
 
 bin/h700/minui-presenter:
@@ -38,6 +41,26 @@ bin/%/minui-presenter:
 	mkdir -p bin/$*
 	curl -f -o bin/$*/minui-presenter -sSL https://github.com/josegonzalez/minui-presenter/releases/download/$(MINUI_PRESENTER_VERSION)/minui-presenter-$*
 	chmod +x bin/$*/minui-presenter
+
+bin/h700/minui-list:
+	mkdir -p bin/h700
+	curl -f -o bin/h700/minui-list -sSL https://github.com/josegonzalez/minui-list/releases/download/$(MINUI_LIST_VERSION)/minui-list-h700-nextui
+	chmod +x bin/h700/minui-list
+
+bin/tg5050/minui-list:
+	mkdir -p bin/tg5050
+	curl -f -o bin/tg5050/minui-list -sSL https://github.com/josegonzalez/minui-list/releases/download/$(MINUI_LIST_VERSION)/minui-list-tg5050-nextui
+	chmod +x bin/tg5050/minui-list
+
+bin/%/minui-list-nextui:
+	mkdir -p bin/$*
+	curl -f -o bin/$*/minui-list-nextui -sSL https://github.com/josegonzalez/minui-list/releases/download/$(MINUI_LIST_VERSION)/minui-list-$*-nextui
+	chmod +x bin/$*/minui-list-nextui
+
+bin/%/minui-list:
+	mkdir -p bin/$*
+	curl -f -o bin/$*/minui-list -sSL https://github.com/josegonzalez/minui-list/releases/download/$(MINUI_LIST_VERSION)/minui-list-$*
+	chmod +x bin/$*/minui-list
 
 bin/arm64/ra-helper:
 	$(MAKE) -C src/ra-helper arm64
